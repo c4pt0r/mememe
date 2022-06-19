@@ -1,9 +1,25 @@
+// mememe
+// Copyright (C) mememe author 2022
+//
+// This program is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with this program.  If not, see <http://www.gnu.org/licenses/>.
+
 package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
-	"os"
 	"time"
 
 	"github.com/c4pt0r/log"
@@ -12,17 +28,18 @@ import (
 )
 
 var (
-	memeAPI = "https://meme-api.herokuapp.com/gimme/ProgrammerHumor"
+	token   = flag.String("tgbot-token", "", "Telegram bot token")
+	debug   = flag.Bool("debug", false, "Enable debug mode")
+	memeAPI = flag.String("meme-api", "https://meme-api.herokuapp.com/gimme/ProgrammerHumor", "Meme API")
 )
 
 func popMeme() ([]byte, error) {
-	client := req.C(). // Use C() to create a client and set with chainable client settings.
-				SetTimeout(5 * time.Second).
-				DevMode()
-	resp, err := client.R(). // Use R() to create a request and set with chainable request settings.
-					SetHeader("Accept", "application/vnd.github.v3+json").
-					EnableDump(). // Enable dump at request level to help troubleshoot, log content only when an unexpected exception occurs.
-					Get(memeAPI)
+	client := req.C().
+		SetTimeout(5 * time.Second)
+	resp, err := client.R().
+		SetHeader("Accept", "application/vnd.github.v3+json").
+		EnableDump().
+		Get(*memeAPI)
 	if err != nil {
 		return nil, err
 	}
@@ -30,6 +47,10 @@ func popMeme() ([]byte, error) {
 		return resp.Bytes(), nil
 	}
 	return nil, nil
+}
+
+func isGifURL(url string) bool {
+	return url[len(url)-4:] == ".gif"
 }
 
 func isMention(update *tgbotapi.Update, who string) bool {
@@ -44,58 +65,66 @@ func isMention(update *tgbotapi.Update, who string) bool {
 	return false
 }
 
+func isPrivateMessage(update *tgbotapi.Update) bool {
+	return update.Message.Chat.Type == "private"
+}
+
 func main() {
-	bot, err := tgbotapi.NewBotAPI(os.Getenv("TELEGRAM_APITOKEN"))
-	if err != nil {
-		panic(err)
+	flag.Parse()
+
+	if *token == "" {
+		log.Fatal("Telegram bot token is required")
 	}
 
-	bot.Debug = true
+	bot, err := tgbotapi.NewBotAPI(*token)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	bot.Debug = *debug
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = 30
 
 	me, err := bot.GetMe()
 	if err != nil {
-		panic(err)
+		log.Fatal(err)
 	}
-	log.Infof("I am %s", me.String())
 
 	updates := bot.GetUpdatesChan(updateConfig)
 	for update := range updates {
-		if update.Message == nil {
+		if (update.Message == nil) ||
+			(!isPrivateMessage(&update) && !isMention(&update, me.String())) {
 			continue
 		}
-
-		if !isMention(&update, me.String()) {
-			continue
-		}
-
 		memeJson, err := popMeme()
 		if err != nil {
 			log.Errorf("Error: %s", err)
 			continue
 		}
-
 		var meme map[string]interface{}
 		err = json.Unmarshal(memeJson, &meme)
 		if err != nil {
 			log.Errorf("Error: %s", err)
 			continue
 		}
-		log.D(string(memeJson))
 		picURL := meme["url"].(string)
 		title := meme["title"].(string)
 		link := meme["postLink"].(string)
 
 		file := tgbotapi.FileURL(picURL)
-		msg := tgbotapi.NewPhoto(update.Message.Chat.ID, file)
-		msg.ReplyToMessageID = update.Message.MessageID
-		msg.Caption = fmt.Sprintf("[%s](%s)", title, link)
-		msg.ParseMode = "Markdown"
+		if isGifURL(picURL) {
+			msg := tgbotapi.NewAnimation(update.Message.Chat.ID, file)
+			msg.ReplyToMessageID = update.Message.MessageID
+			msg.Caption = fmt.Sprintf("[%s](%s)", title, link)
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
 
-		if _, err := bot.Send(msg); err != nil {
-			log.E(err)
+		} else {
+			msg := tgbotapi.NewPhoto(update.Message.Chat.ID, file)
+			msg.ReplyToMessageID = update.Message.MessageID
+			msg.Caption = fmt.Sprintf("[%s](%s)", title, link)
+			msg.ParseMode = "Markdown"
+			bot.Send(msg)
 		}
 	}
-
 }
